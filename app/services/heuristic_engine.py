@@ -234,7 +234,7 @@ Violations:"""
         try:
             # Call LLM
             response = await self.llm_client.chat.completions.create(
-                model="gpt-4o",
+                model=settings.OPENAI_MODEL,
                 messages=[
                     {"role": "system", "content": "You are a UX evaluation expert. Respond only with valid JSON."},
                     {"role": "user", "content": prompt}
@@ -521,16 +521,22 @@ Violations:"""
         score: int,
         violations: List[HeuristicViolation]
     ) -> Optional[str]:
+        """Generate LLM-based explanation for heuristic evaluation results.
+        
+        Uses only real OmniParser output fields (type, bbox, interactivity, content).
+        Gracefully handles missing/optional fields.
+        """
         if not self.llm_client:
             return None
 
         try:
+            # Serialize elements using only real OmniParser fields
             elements_brief = [
                 {
                     "type": e.element_type,
                     "text": e.text,
-                    "interactive": e.interactive,
-                    "attributes": list(e.attributes.keys())
+                    "interactivity": e.interactivity,  # Use real field name
+                    "bbox": e.bbox  # Include bounding box for context
                 }
                 for e in detection_result.elements[:20]
             ]
@@ -571,5 +577,8 @@ Violations:"""
             return response.choices[0].message.content.strip() if response.choices else None
 
         except Exception as exc:
-            self.logger.warning(f"LLM explanation failed for {heuristic_id.value}: {exc}")
+            self.logger.warning(
+                f"LLM explanation failed for {heuristic_id.value}: {exc}. "
+                f"Falling back to empty explanation."
+            )
             return None
