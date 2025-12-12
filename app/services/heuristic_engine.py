@@ -145,14 +145,27 @@ class HeuristicEvaluationEngine:
     ) -> HeuristicScore:
         self.logger.info(f"Evaluating heuristic {heuristic_id.value}")
 
+
+        rag_context = None
+        if self.rag_kb:
+            try:
+                rag_context = await self.rag_kb.retrieve_relevant_context(
+                    query=heuristic_id.value,          
+                    heuristic_id=heuristic_id.value   
+                )
+                self.logger.info(f"RAG context type: {type(rag_context)}")
+                self.logger.info(f"RAG context: {rag_context}")
+            except Exception as e:
+                self.logger.warning(f"Failed to retrieve RAG context: {e}")
+
         violations = []
 
         if heuristic_id == HeuristicId.H1_VISIBILITY_OF_SYSTEM_STATUS:
-            violations = await self._evaluate_h1_visibility(elements, detection_result)
+            violations = await self._evaluate_h1_visibility(elements, detection_result,rag_context)
         elif heuristic_id == HeuristicId.H2_MATCH_BETWEEN_SYSTEM_AND_REAL_WORLD:
-            violations = await self._evaluate_h2_match_real_world(elements, detection_result)
+            violations = await self._evaluate_h2_match_real_world(elements, detection_result,rag_context)
         elif heuristic_id == HeuristicId.H3_USER_CONTROL_AND_FREEDOM:
-            violations = await self._evaluate_h3_user_control(elements, detection_result)
+            violations = await self._evaluate_h3_user_control(elements, detection_result,rag_context)
 
         score, explanation = self.calculate_score(violations, heuristic_id.value)
 
@@ -160,7 +173,8 @@ class HeuristicEvaluationEngine:
             heuristic_id,
             detection_result,
             score,
-            violations
+            violations,
+            rag_context 
         )
 
         return HeuristicScore(
@@ -174,22 +188,43 @@ class HeuristicEvaluationEngine:
     async def _evaluate_h1_visibility(
         self,
         elements: List[UIElement],
-        detection_result: UIElementDetectionResult
+        detection_result: UIElementDetectionResult,
+        rag_context: Optional[List[Dict[str, Any]]] = None
     ) -> List[HeuristicViolation]:
         violations = []
+
+        button_feedback_pattern = None
+        form_label_pattern = None
+
+        if rag_context:
+            for entry in rag_context:
+                category = entry.get('category', '').lower()
+                if 'button' in category or 'feedback' in category:
+                    button_feedback_pattern = entry
+                elif 'form' in category or 'label' in category:
+                    form_label_pattern = entry
 
         buttons = [e for e in elements if e.element_type == "button"]
         inputs = [e for e in elements if e.element_type == "input"]
 
         for button in buttons:
             if not button.attributes.get("hover_state") and not button.attributes.get("active_state"):
+                if button_feedback_pattern:
+                    recommendation = (
+                        f"Based on '{button_feedback_pattern.get('category')}' best practice: "
+                        f"{button_feedback_pattern.get('content')} "
+                        f"Example: {button_feedback_pattern.get('example')}"
+                    )
+                else:
+                    recommendation = "Add hover and active states to button for user feedback"
+
                 violations.append(HeuristicViolation(
                     heuristic_id="H1",
                     criterion_id="H1.2",
                     severity=SeverityLevel.MAJOR,
                     description=f"Button '{button.text}' lacks visible hover or active states",
                     affected_elements=[button.text],
-                    recommendation="Add hover and active states to button for user feedback"
+                    recommendation=recommendation
                 ))
 
         for input_field in inputs:
@@ -200,17 +235,26 @@ class HeuristicEvaluationEngine:
                     severity=SeverityLevel.MINOR,
                     description=f"Input field lacks placeholder or label for guidance",
                     affected_elements=[input_field.text],
-                    recommendation="Add placeholder text or label to help users understand input"
+                    recommendation=recommendation
                 ))
 
         if len(buttons) > 0 and not any(b.attributes.get("loading_state") for b in buttons):
+            if button_feedback_pattern:
+                recommendation = (
+                    f"Based on '{button_feedback_pattern.get('category')}' best practice: "
+                    f"{button_feedback_pattern.get('content')} Add loading indicators during async operations. "
+                    f"Example: {button_feedback_pattern.get('example')}"
+                )
+            else:
+                recommendation = "Add loading indicators to buttons during async operations"
+
             violations.append(HeuristicViolation(
                 heuristic_id="H1",
                 criterion_id="H1.2",
                 severity=SeverityLevel.MAJOR,
                 description="No loading states detected for action buttons",
                 affected_elements=[b.text for b in buttons],
-                recommendation="Add loading indicators to buttons during async operations"
+                recommendation=recommendation
             ))
 
         return violations
@@ -218,33 +262,62 @@ class HeuristicEvaluationEngine:
     async def _evaluate_h2_match_real_world(
         self,
         elements: List[UIElement],
-        detection_result: UIElementDetectionResult
+        detection_result: UIElementDetectionResult,
+        rag_context: Optional[List[Dict[str, Any]]] = None
     ) -> List[HeuristicViolation]:
         violations = []
+
+        language_pattern = None
+
+        if rag_context:
+            for entry in rag_context:
+                if 'language' in entry.get('category', '').lower() or 'jargon' in entry.get('content', '').lower():
+                    language_pattern = entry
+
 
         for element in elements:
             if element.element_type == "button":
                 text = element.text.lower()
                 if any(term in text for term in ["submit", "execute", "process"]):
+                    if language_pattern:
+                        recommendation = (
+                                f"Based on '{language_pattern.get('category')}' best practice: "
+                                f"{language_pattern.get('content')} "
+                                f"Example: {language_pattern.get('example')}"
+                            )
+                    else:
+                        recommendation = "Use action-oriented, user-friendly language (e.g., 'Send', 'Save', 'Continue')"
+
+
                     violations.append(HeuristicViolation(
                         heuristic_id="H2",
                         criterion_id="H2.2",
                         severity=SeverityLevel.MINOR,
                         description=f"Button uses technical term '{element.text}' instead of user-friendly language",
                         affected_elements=[element.text],
-                        recommendation="Use action-oriented, user-friendly language (e.g., 'Send', 'Save', 'Continue')"
+                        recommendation=recommendation
                     ))
 
             if element.element_type == "heading":
                 text = element.text
                 if any(jargon in text.lower() for jargon in ["api", "endpoint", "database"]):
+
+                    if language_pattern:
+                        recommendation = (
+                                f"Based on '{language_pattern.get('category')}' best practice: "
+                                f"{language_pattern.get('content')} "
+                                f"Example: {language_pattern.get('example')}"
+                            )
+                    else:
+                        recommendation = "Avoid technical jargon in headings; use clear, simple language"
+
                     violations.append(HeuristicViolation(
                         heuristic_id="H2",
                         criterion_id="H2.2",
                         severity=SeverityLevel.MAJOR,
                         description=f"Heading contains technical jargon: '{text}'",
                         affected_elements=[text],
-                        recommendation="Replace technical jargon with user-friendly terminology"
+                        recommendation=recommendation
                     ))
 
         return violations
@@ -252,9 +325,21 @@ class HeuristicEvaluationEngine:
     async def _evaluate_h3_user_control(
         self,
         elements: List[UIElement],
-        detection_result: UIElementDetectionResult
+        detection_result: UIElementDetectionResult,
+        rag_context: Optional[List[Dict[str, Any]]] = None
     ) -> List[HeuristicViolation]:
         violations = []
+
+
+        confirmation_pattern = None
+        exit_pattern = None
+    
+        if rag_context:
+            for entry in rag_context:
+                if 'confirmation' in entry.get('content', '').lower() or 'delete' in entry.get('content', '').lower():
+                    confirmation_pattern = entry
+                if 'exit' in entry.get('content', '').lower() or 'cancel' in entry.get('content', '').lower():
+                    exit_pattern = entry
 
         has_delete_button = any(
             "delete" in e.text.lower() or "remove" in e.text.lower()
@@ -270,13 +355,23 @@ class HeuristicEvaluationEngine:
 
             for btn in delete_buttons:
                 if not btn.attributes.get("confirmation"):
+
+                    if confirmation_pattern:
+                        recommendation = (
+                            f"baseed on '{confirmation_pattern.get('category')}' best practice: "
+                            f"{confirmation_pattern.get('content')} "
+                            f"Example: {confirmation_pattern.get('example')}"
+                        )
+                    else:
+                           recommendation=  "Add confirmation dialog for destructive actions to prevent accidents. "
+                           
                     violations.append(HeuristicViolation(
                         heuristic_id="H3",
                         criterion_id="H3.3",
                         severity=SeverityLevel.CRITICAL,
                         description=f"Delete button '{btn.text}' lacks confirmation dialog",
                         affected_elements=[btn.text],
-                        recommendation="Add confirmation dialog for destructive actions to prevent accidents"
+                        recommendation=recommendation
                     ))
 
         form_elements = [e for e in elements if e.element_type in ["button", "input", "form"]]
@@ -286,13 +381,21 @@ class HeuristicEvaluationEngine:
         )
 
         if len(form_elements) > 2 and not has_cancel:
+            if exit_pattern:
+                recommendation = (
+                    f"Based on '{exit_pattern.get('category')}' best practice: "
+                    f"{exit_pattern.get('content')} "
+                    f"Example: {exit_pattern.get('example')}"
+                )
+            else:
+                recommendation = "Add cancel/back button to allow users to exit without completing form"
             violations.append(HeuristicViolation(
                 heuristic_id="H3",
                 criterion_id="H3.2",
                 severity=SeverityLevel.MAJOR,
                 description="Form lacks clear exit option (cancel/back button)",
                 affected_elements=["form"],
-                recommendation="Add cancel/back button to allow users to exit without completing form"
+                recommendation=recommendation
             ))
 
         return violations
@@ -351,7 +454,8 @@ class HeuristicEvaluationEngine:
         heuristic_id: HeuristicId,
         detection_result: UIElementDetectionResult,
         score: int,
-        violations: List[HeuristicViolation]
+        violations: List[HeuristicViolation] ,
+        rag_context: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[str]:
         if not self.llm_client:
             return None
@@ -366,6 +470,14 @@ class HeuristicEvaluationEngine:
                 }
                 for e in detection_result.elements[:20]
             ]
+            expert_feedback = "No expert feedback available."
+            ui_patterns = "No UI patterns available."
+            if rag_context:
+                expert_feedback = "\n".join([entry.get("content", "") for entry in rag_context])
+                ui_patterns = "\n".join([
+                    f"{entry.get('category', 'Pattern')}: {entry.get('example', '')}"
+                    for entry in rag_context
+                ])
 
             prompt = (
                 "You are a UX heuristic expert. Summarize the key usability issues for "
@@ -377,6 +489,8 @@ class HeuristicEvaluationEngine:
                 {
                     "role": "system",
                     "content": "Provide clear, concise UX heuristic explanations."
+                    f"Use this expert feedback: {expert_feedback}. "
+                    f"Use these UI patterns: {ui_patterns}."
                 },
                 {
                     "role": "user",
